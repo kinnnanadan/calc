@@ -1,1 +1,215 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LTspice 全波整流回路 波形解析ツール</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- 全画面ドラッグ＆ドロップオーバーレイ -->
+  <div id="globalDropOverlay" class="global-drop-overlay hidden" aria-hidden="true">
+    <div class="global-drop-box">
+      <div class="drop-icon-lg">📂</div>
+      <p class="drop-overlay-title">ここに LTspice のテキストファイルをドロップ</p>
+      <p class="drop-overlay-sub">波形データ (.txt / .tsv) を解析して結果を表示します</p>
+    </div>
+  </div>
+
+  <header class="app-header">
+    <div class="container header-inner">
+      <div class="brand">
+        <div class="brand-badge">LTspice</div>
+        <div>
+          <h1>全波整流回路 波形解析・リップル計算</h1>
+          <p class="subtitle">条件・最大値・最小値・出力平均電圧・リップル・脈動率を自動算出</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button id="btnLoadSample" class="btn btn-secondary" type="button" title="同フォルダの Draft.txt を読み込みます">
+          Draft.txt を読み込む
+        </button>
+        <label class="btn btn-primary" for="fileInput">
+          ファイルを選択
+          <input id="fileInput" type="file" accept=".txt,.csv,.tsv,.dat,text/plain" hidden />
+        </label>
+      </div>
+    </div>
+  </header>
+
+  <main class="container main-content">
+    <!-- ドロップゾーン（初期表示・読み込み後はコンパクト化） -->
+    <section id="dropZone" class="drop-zone" tabindex="0" role="button" aria-label="LTspice波形ファイルをドラッグ＆ドロップまたはクリックして選択">
+      <div class="drop-zone-inner">
+        <div class="drop-icon">⚡</div>
+        <div class="drop-text">
+          <h2>LTspice 波形ファイル (<code>Draft.txt</code> など) をここにドラッグ＆ドロップ</h2>
+          <p>
+            <code>File &gt; Export data as text</code> で書き出したテキストファイルに対応（複数 Step 解析・単一波形どちらもOK）。
+            <span class="hint-inline">※ 画面上のどこにドロップしても読み込めます。</span>
+          </p>
+        </div>
+        <div class="drop-buttons">
+          <span class="pill-note">処理はすべてブラウザ内で完結（外部送信なし）</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- エラー・ステータス表示 -->
+    <div id="statusBanner" class="status-banner hidden" role="status"></div>
+
+    <!-- 解析結果エリア -->
+    <div id="dashboard" class="dashboard hidden">
+      <!-- 解析設定・条件バー -->
+      <section class="panel settings-panel">
+        <div class="panel-header">
+          <h2>解析設定・回路条件</h2>
+          <div class="file-meta-badges" id="fileMetaBadges"></div>
+        </div>
+
+        <div class="settings-grid">
+          <div class="control-group">
+            <label for="signalSelect">解析対象の電圧列</label>
+            <select id="signalSelect"></select>
+          </div>
+
+          <div class="control-group">
+            <label for="windowPreset">解析時間区間（定常状態の抽出）</label>
+            <select id="windowPreset">
+              <option value="last20" selected>後半 20%（定常区間 80%〜100% 推奨）</option>
+              <option value="last50">後半 50%（50%〜100%）</option>
+              <option value="last10ms">末尾 10 ms</option>
+              <option value="last5ms">末尾 5 ms</option>
+              <option value="full">全区間（0%〜100%・過渡応答含む）</option>
+              <option value="custom">カスタム時間指定 [ms]</option>
+            </select>
+          </div>
+
+          <div class="control-group custom-time-group" id="customTimeGroup">
+            <label>時間範囲 [ms]</label>
+            <div class="time-range-inputs">
+              <input id="timeStartMs" type="number" step="0.1" min="0" />
+              <span>〜</span>
+              <input id="timeEndMs" type="number" step="0.1" min="0" />
+            </div>
+          </div>
+
+          <div class="control-group">
+            <label for="rippleFormula">脈動率の定義式</label>
+            <select id="rippleFormula">
+              <option value="pp_avg" selected>(Vmax − Vmin) / Vavg × 100 [%]</option>
+              <option value="rms_avg">Vr(rms) / Vavg × 100 [%]</option>
+              <option value="half_pp_avg">((Vmax − Vmin) / 2) / Vavg × 100 [%]</option>
+            </select>
+          </div>
+
+          <div class="control-group">
+            <label for="precisionSelect">表示桁数（小数点以下）</label>
+            <select id="precisionSelect">
+              <option value="3">3桁</option>
+              <option value="4" selected>4桁</option>
+              <option value="5">5桁</option>
+              <option value="6">6桁</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="formula-note" id="formulaNote"></div>
+      </section>
+
+      <!-- サマリーKPI -->
+      <section class="kpi-grid" id="kpiGrid"></section>
+
+      <!-- グラフエリア -->
+      <section class="charts-grid">
+        <div class="panel chart-panel">
+          <div class="panel-header">
+            <div>
+              <h2>条件別 特性グラフ</h2>
+              <p class="panel-sub" id="trendChartSub">点をクリックすると右の波形プレビューに切り替わります</p>
+            </div>
+            <div class="chart-controls">
+              <div class="segmented" role="group" aria-label="グラフ種別">
+                <button type="button" class="seg-btn active" data-trend-mode="voltage">電圧 (Vmax/Vavg/Vmin)</button>
+                <button type="button" class="seg-btn" data-trend-mode="ripple">リップル・脈動率</button>
+              </div>
+              <label class="checkbox-label">
+                <input type="checkbox" id="logXAxis" checked />
+                <span>対数横軸</span>
+              </label>
+            </div>
+          </div>
+          <div class="canvas-wrap">
+            <canvas id="trendCanvas"></canvas>
+            <div id="trendTooltip" class="chart-tooltip hidden"></div>
+          </div>
+        </div>
+
+        <div class="panel chart-panel">
+          <div class="panel-header">
+            <div>
+              <h2>波形プレビュー</h2>
+              <p class="panel-sub" id="waveChartSub">選択ステップの時間波形</p>
+            </div>
+            <div class="chart-controls">
+              <button id="btnPrevStep" class="btn btn-sm btn-secondary" type="button">◀ 前</button>
+              <select id="stepSelect" class="step-select" aria-label="表示ステップ選択"></select>
+              <button id="btnNextStep" class="btn btn-sm btn-secondary" type="button">次 ▶</button>
+              <label class="checkbox-label">
+                <input type="checkbox" id="zoomSteady" checked />
+                <span>定常区間のみ拡大</span>
+              </label>
+            </div>
+          </div>
+          <div class="canvas-wrap">
+            <canvas id="waveCanvas"></canvas>
+            <div id="waveTooltip" class="chart-tooltip hidden"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 一覧テーブル -->
+      <section class="panel table-panel">
+        <div class="panel-header table-header">
+          <div>
+            <h2>全条件 解析結果一覧</h2>
+            <p class="panel-sub" id="tableCountSub"></p>
+          </div>
+          <div class="table-actions">
+            <input id="tableSearch" class="search-input" type="search" placeholder="条件を検索 (例: 100, 1K, 10K)..." />
+            <button id="btnCopyTsv" class="btn btn-secondary" type="button">表をコピー (Excel/TSV)</button>
+            <button id="btnDownloadCsv" class="btn btn-primary" type="button">CSV ダウンロード</button>
+          </div>
+        </div>
+
+        <div class="table-scroll">
+          <table id="resultsTable">
+            <thead>
+              <tr>
+                <th data-sort="stepIndex" class="sortable num">Step <span class="sort-ind"></span></th>
+                <th data-sort="paramValue" class="sortable">条件 <span class="sort-ind"></span></th>
+                <th data-sort="vmax" class="sortable num">最大値 Vmax [V] <span class="sort-ind"></span></th>
+                <th data-sort="vmin" class="sortable num">最小値 Vmin [V] <span class="sort-ind"></span></th>
+                <th data-sort="vavg" class="sortable num">出力平均電圧 Vavg [V] <span class="sort-ind"></span></th>
+                <th data-sort="ripplePP" class="sortable num">リップル ΔV [V] <span class="sort-ind"></span></th>
+                <th data-sort="rippleFactor" class="sortable num">脈動率 [%] <span class="sort-ind"></span></th>
+              </tr>
+            </thead>
+            <tbody id="resultsTbody"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="app-footer container">
+    <p>
+      平均電圧は LTspice の可変時間刻みに対応するため台形積分による時間重み付け平均
+      <code>(1/ΔT)∫V(t)dt</code> で算出しています。
+    </p>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>
 
